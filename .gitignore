@@ -1,0 +1,57 @@
+# Byte-compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Packaging and build output
+build/
+dist/
+downloads/
+egg-info/
+.eggs/
+*.egg
+wheels/
+share/python-wheels/
+
+# Test and coverage output
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Type checking and lint caches
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Logs and local environment files
+*.log
+.env
+.env.*
+!.env.example
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+
+employeeList.json
+MDM 2.0.postman_collection.json
+RMS.postman_collection.json
+
+MDM 2.0/
+RMS/
+RMS Dev/
