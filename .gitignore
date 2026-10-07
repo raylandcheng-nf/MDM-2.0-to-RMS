@@ -55,3 +55,6 @@ RMS.postman_collection.json
 MDM 2.0/
 RMS/
 RMS Dev/
+*.doc
+*.docx
+test.py
