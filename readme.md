@@ -7,8 +7,13 @@
 - Python 3.9 or later
 - Network access to the MDM token and employee endpoints
 - Any required API key and TLS certificate authority configuration
+- `Mapping.xlsx` next to `app.py`, with a table containing `MDM Department` and `Department Code` columns
 
-The script uses only Python's standard library, so no package installation is required.
+Install the dependencies with:
+
+```powershell
+pip install -r requirements.txt
+```
 
 ## Configuration
 
@@ -50,6 +55,8 @@ python app.py
 ```
 
 The script requests an MDM access token with the `x-api-key` header, then fetches employee records using bearer authentication. It requests pages using the `Page` and `Size` query parameters until there are no results or the API's `TotalPages` count is reached.
+
+For each employee, `PrimaryDepartment.Name` is matched against the `MDM Department` column in the `Department` table in `Mapping.xlsx`. The corresponding `Department Code` is used in the RMS employee payload. Missing or conflicting mappings stop processing with an error.
 
 RMS writes are controlled by `RMS_UPDATE_ENABLED`. Set it to `true` to enable RMS updates; `false` disables all RMS token and employee requests while MDM fetching and the local export continue. It defaults to `false`, and any other value is rejected.
 

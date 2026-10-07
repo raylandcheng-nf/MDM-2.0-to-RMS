@@ -7,6 +7,8 @@ from pathlib import Path
 from urllib.parse import urlencode
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from openpyxl import load_workbook
+from openpyxl.utils.cell import range_boundaries
 
 
 def load_env_file():
@@ -100,7 +102,51 @@ def get_rms_token(settings, ssl_context):
 	return issued_token
 
 
-def create_rms_employee(employee, employee_url, issued_token, ssl_context):
+def load_department_mappings(mapping_path):
+	workbook = load_workbook(mapping_path, data_only=True)
+	department_mappings = {}
+	mapping_table_found = False
+	try:
+		for worksheet in workbook.worksheets:
+			for table in worksheet.tables.values():
+				min_column, header_row, max_column, max_row = range_boundaries(table.ref)
+				headers = {
+					str(worksheet.cell(header_row, column).value).strip(): column
+					for column in range(min_column, max_column + 1)
+					if worksheet.cell(header_row, column).value is not None
+				}
+				if not {"MDM Department", "Department Code"}.issubset(headers):
+					continue
+				if mapping_table_found:
+					raise ValueError("Multiple tables contain MDM Department and Department Code")
+				mapping_table_found = True
+				for row in range(header_row + 1, max_row + 1):
+					department_name = worksheet.cell(row, headers["MDM Department"]).value
+					department_code = worksheet.cell(row, headers["Department Code"]).value
+					if department_name is None or not str(department_name).strip():
+						continue
+					if department_code is None or not str(department_code).strip():
+						raise ValueError(
+							f"Missing Department Code for MDM Department {department_name!r}"
+						)
+					department_name = str(department_name).strip()
+					department_code = str(department_code).strip()
+					previous_code = department_mappings.get(department_name)
+					if previous_code is not None and previous_code != department_code:
+						raise ValueError(
+							f"Conflicting Department Codes for MDM Department {department_name!r}"
+						)
+					department_mappings[department_name] = department_code
+	finally:
+		workbook.close()
+	if not mapping_table_found:
+		raise ValueError(
+			"Mapping.xlsx must contain a table with MDM Department and Department Code columns"
+		)
+	return department_mappings
+
+
+def build_rms_employee(employee, department_mappings):
 	accounts = employee.get("Accounts") or []
 	sam_account_name = next(
 		(
@@ -129,20 +175,37 @@ def create_rms_employee(employee, employee_url, issued_token, ssl_context):
 		),
 		None,
 	)
+	department_name = (employee.get("PrimaryDepartment") or {}).get("Name")
+	if not isinstance(department_name, str) or not department_name.strip():
+		raise ValueError(
+			f"Employee {employee.get('EmployeeNo')} is missing PrimaryDepartment.Name"
+		)
+	department_name = department_name.strip()
+	try:
+		department_code = department_mappings[department_name]
+	except KeyError as error:
+		raise ValueError(
+			f"No Department Code mapping found for MDM Department {department_name!r}"
+		) from error
+	ad_domain_prefix = "NFTRINITY" if department_code == "NTR" else "NANFUNG"
 	new_employee = {
 		"Revision": 1,
 		"UserID": employee["EmployeeNo"],
 		"UserNameChi": "",
 		"UserNameEng": employee.get("PreferedName") or employee.get("PreferredName") or "",
-		"ADUserID": f"NANFUNG\\{sam_account_name or ''}",
-		"Department": "IT",
-		"Tel": phone_number,
+		"ADUserID": f"{ad_domain_prefix}\\{sam_account_name or ''}",
+		"Department": department_code,
+		"Tel": phone_number or "",
 		"Email": f"dev.{active_primary_email}" if active_primary_email else "",
 		"IsActive": 1,
 	}
+	return new_employee
+
+
+def create_rms_employee(rms_employee, employee_url, issued_token, ssl_context):
 	create_request = Request(
 		employee_url.rstrip("/"),
-		data=json.dumps([new_employee]).encode("utf-8"),
+		data=json.dumps([rms_employee]).encode("utf-8"),
 		headers={
 			"Token": issued_token,
 			"Content-Type": "application/json",
@@ -230,31 +293,19 @@ def _process():
 		and date.fromisoformat(employee["OriginalHireDate"][:10]) > cutoff_date
 	]
 	employee_list["Count"] = len(employee_list["Results"])
+	department_mappings = load_department_mappings(
+		Path(__file__).with_name("Mapping.xlsx")
+	)
+	rms_employees = []
 	for employee in employee_list["Results"]:
-		primary_department = employee.get("PrimaryDepartment") or {}
-		phones = employee.get("Phones") or []
-		emails = employee.get("Emails") or []
-		staff_cards = employee.get("StaffCards") or []
-		active_primary_email = next(
-			(
-				email.get("Email")
-				for email in emails
-				if email.get("IsPrimary") and email.get("IsActive")
-			),
-			None,
-		)
-		employee_summary = {
-			"UserID": employee.get("EmployeeNo"),
-			"UserNameEng": employee.get("PreferredName", employee.get("PreferedName")),
-			"Department": primary_department.get("Name"),
-			"Tel": next(
-				(phone.get("PhoneNumber") for phone in phones if phone.get("PhoneNumber")),
-				None,
-			),
-			"Email": active_primary_email,
-			"NFCs": [card.get("StaffCardId") for card in staff_cards if card.get("StaffCardId")],
-			"IsActive": 1
-		}
+		rms_employee = build_rms_employee(employee, department_mappings)
+		rms_employees.append((employee, rms_employee))
+		employee_summary = dict(rms_employee)
+		employee_summary["NFCIDs"] = [
+			card.get("StaffCardId")
+			for card in employee.get("StaffCards") or []
+			if card.get("StaffCardId")
+		]
 		print(json.dumps(employee_summary, ensure_ascii=False, indent=2))
 
 	rms_update_enabled = os.environ.get("RMS_UPDATE_ENABLED", "false").strip().lower()
@@ -264,8 +315,8 @@ def _process():
 	processed_ids_path = Path(__file__).with_name("ProcessedUserID.json")
 	processed_user_ids = load_processed_user_ids(processed_ids_path)
 	pending_employees = [
-		employee
-		for employee in employee_list["Results"]
+		(employee, rms_employee)
+		for employee, rms_employee in rms_employees
 		if employee.get("EmployeeNo") is not None
 		and not all(processed_user_ids.get(str(employee["EmployeeNo"]), {}).get(status_name, False)
 				for status_name in ("EmployeeUpdateSuccess", "EmployeeNFCUpdateSuccess"))
@@ -274,7 +325,7 @@ def _process():
 		rms_token = get_rms_token(os.environ, ssl_context)
 		rms_employee_url = os.environ["RMS_EMPLOYEE_URL"]
 		rms_employee_nfc_url = os.environ["RMS_EMPLOYEE_NFC_URL"]
-		for employee in pending_employees:
+		for employee, rms_employee in pending_employees:
 			user_id = str(employee["EmployeeNo"])
 			user_status = processed_user_ids.setdefault(
 				user_id,
@@ -286,7 +337,7 @@ def _process():
 			if not user_status["EmployeeUpdateSuccess"]:
 				try:
 					status = create_rms_employee(
-						employee, rms_employee_url, rms_token, ssl_context
+						rms_employee, rms_employee_url, rms_token, ssl_context
 					)
 				except HTTPError as error:
 					print(f"Create employee {user_id}: FAILED (HTTP {error.code})")
