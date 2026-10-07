@@ -1,6 +1,7 @@
 import json
 import os
 import ssl
+import Notification
 from datetime import date
 from pathlib import Path
 from urllib.parse import urlencode
@@ -67,6 +68,16 @@ def save_processed_user_ids(path, processed_user_ids):
 		json.dumps(processed_user_ids, indent=2) + "\n",
 		encoding="utf-8",
 	)
+
+
+def notify_api_error(message):
+	try:
+		Notification.send_error_notification(
+			subject="MDM 2.0 to RMS API Error",
+			body=str(message),
+		)
+	except Exception as notification_error:
+		print(f"Failed to send error notification: {notification_error}")
 
 
 def get_rms_token(settings, ssl_context):
@@ -175,7 +186,7 @@ def create_rms_employee_nfc(employee, employee_nfc_url, issued_token, ssl_contex
 		return response.status
 
 
-def main():
+def _process():
 	load_env_file()
 	token_url = os.environ["MDM_TOKEN_URL"]
 	api_key = os.environ["MDM_KEY"]
@@ -282,6 +293,10 @@ def main():
 					response_body = error.read().decode("utf-8", errors="replace")
 					if response_body:
 						print(response_body)
+						notify_api_error(
+							f"Create employee {user_id} failed: HTTP {error.code} {error.reason}. "
+							f"Response: {response_body or 'No response body'}"
+						)
 					continue
 				print(f"Create employee {user_id}: SUCCESS (HTTP {status})")
 				user_status["EmployeeUpdateSuccess"] = True
@@ -296,6 +311,10 @@ def main():
 					response_body = error.read().decode("utf-8", errors="replace")
 					if response_body:
 						print(response_body)
+						notify_api_error(
+							f"Create employee NFC {user_id} failed: HTTP {error.code} {error.reason}. "
+							f"Response: {response_body or 'No response body'}"
+						)
 					continue
 				if nfc_status is None:
 					print(f"Create employee NFC {user_id}: SKIPPED (no StaffCardId in MDM)")
@@ -311,6 +330,14 @@ def main():
 		json.dumps(employee_list, indent=2, ensure_ascii=False) + "\n",
 		encoding="utf-8",
 	)
+
+
+def main():
+	try:
+		_process()
+	except Exception as error:
+		notify_api_error(f"API processing failed: {error}")
+		raise
 
 
 if __name__ == "__main__":
