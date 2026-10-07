@@ -11,6 +11,10 @@ from openpyxl import load_workbook
 from openpyxl.utils.cell import range_boundaries
 
 
+class DepartmentMappingError(ValueError):
+	pass
+
+
 def load_env_file():
 	env_path = Path(__file__).with_name(".env")
 	for line in env_path.read_text(encoding="utf-8").splitlines():
@@ -184,7 +188,7 @@ def build_rms_employee(employee, department_mappings):
 	try:
 		department_code = department_mappings[department_name]
 	except KeyError as error:
-		raise ValueError(
+		raise DepartmentMappingError(
 			f"No Department Code mapping found for MDM Department {department_name!r}"
 		) from error
 	ad_domain_prefix = "NFTRINITY" if department_code == "NTR" else "NANFUNG"
@@ -298,7 +302,14 @@ def _process():
 	)
 	rms_employees = []
 	for employee in employee_list["Results"]:
-		rms_employee = build_rms_employee(employee, department_mappings)
+		try:
+			rms_employee = build_rms_employee(employee, department_mappings)
+		except DepartmentMappingError as error:
+			user_id = employee.get("EmployeeNo", "unknown")
+			message = f"Department mapping failed for employee {user_id}: {error}"
+			print(message)
+			notify_api_error(message)
+			continue
 		rms_employees.append((employee, rms_employee))
 		employee_summary = dict(rms_employee)
 		employee_summary["NFCIDs"] = [
