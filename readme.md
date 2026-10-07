@@ -39,6 +39,7 @@ MDM_CA_BUNDLE=<path to a CA certificate bundle>
 When `MDM_CA_BUNDLE` is unset, the script uses the system's default certificate authorities. On Windows, it also attempts to load server-trusted certificates from the Windows `ROOT` and `CA` stores.
 
 Keep `.env` private; do not commit API keys or other credentials.
+Values from `.env` override same-named process environment variables when the script starts.
 
 ## Run
 

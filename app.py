@@ -15,7 +15,7 @@ def load_env_file():
 		if not line or line.startswith("#") or "=" not in line:
 			continue
 		name, value = line.split("=", 1)
-		os.environ.setdefault(name.strip(), value.strip().strip("\"'"))
+		os.environ[name.strip()] = value.strip().strip("\"'")
 
 
 def create_ssl_context():
