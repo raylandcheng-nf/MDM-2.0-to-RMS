@@ -47,7 +47,7 @@ dmypy.json
 .DS_Store
 Thumbs.db
 
-
+# Bruno files
 employeeList.json
 MDM 2.0.postman_collection.json
 RMS.postman_collection.json

@@ -43,7 +43,12 @@ def create_ssl_context():
 def load_processed_user_ids(path):
 	if not path.exists():
 		path.write_text("{}\n", encoding="utf-8")
-	processed_user_ids = json.loads(path.read_text(encoding="utf-8"))
+	contents = path.read_text(encoding="utf-8")
+	if not contents.strip():
+		processed_user_ids = {}
+		save_processed_user_ids(path, processed_user_ids)
+	else:
+		processed_user_ids = json.loads(contents)
 	if isinstance(processed_user_ids, list):
 		processed_user_ids = {
 			str(user_id): {
@@ -192,6 +197,7 @@ def build_rms_employee(employee, department_mappings):
 			f"No Department Code mapping found for MDM Department {department_name!r}"
 		) from error
 	ad_domain_prefix = "NFTRINITY" if department_code == "NTR" else "NANFUNG"
+	email_prefix = "" if "prod" in os.environ.get("ENVIRONMENT", "").casefold() else "dev."
 	new_employee = {
 		"Revision": 1,
 		"UserID": employee["EmployeeNo"],
@@ -200,7 +206,8 @@ def build_rms_employee(employee, department_mappings):
 		"ADUserID": f"{ad_domain_prefix}\\{sam_account_name or ''}",
 		"Department": department_code,
 		"Tel": phone_number or "",
-		"Email": f"dev.{active_primary_email}" if active_primary_email else "",
+		"Email": f"{email_prefix}{active_primary_email}" if active_primary_email else "",
+		"UserGroup": "NonUser",
 		"IsActive": 1,
 	}
 	return new_employee
@@ -311,13 +318,6 @@ def _process():
 			notify_api_error(message)
 			continue
 		rms_employees.append((employee, rms_employee))
-		employee_summary = dict(rms_employee)
-		employee_summary["NFCIDs"] = [
-			card.get("StaffCardId")
-			for card in employee.get("StaffCards") or []
-			if card.get("StaffCardId")
-		]
-		print(json.dumps(employee_summary, ensure_ascii=False, indent=2))
 
 	rms_update_enabled = os.environ.get("RMS_UPDATE_ENABLED", "false").strip().lower()
 	if rms_update_enabled not in {"true", "false"}:
@@ -332,6 +332,14 @@ def _process():
 		and not all(processed_user_ids.get(str(employee["EmployeeNo"]), {}).get(status_name, False)
 				for status_name in ("EmployeeUpdateSuccess", "EmployeeNFCUpdateSuccess"))
 	]
+	for employee, rms_employee in pending_employees:
+		employee_summary = dict(rms_employee)
+		employee_summary["NFCIDs"] = [
+			card.get("StaffCardId")
+			for card in employee.get("StaffCards") or []
+			if card.get("StaffCardId")
+		]
+		print(json.dumps(employee_summary, ensure_ascii=False, indent=2))
 	if rms_update_enabled == "true" and pending_employees:
 		rms_token = get_rms_token(os.environ, ssl_context)
 		rms_employee_url = os.environ["RMS_EMPLOYEE_URL"]
