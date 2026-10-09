@@ -1,10 +1,11 @@
 import json
 import os
 import ssl
+import warnings
 import Notification
 from datetime import date
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from openpyxl import load_workbook
@@ -111,8 +112,30 @@ def get_rms_token(settings, ssl_context):
 	return issued_token
 
 
+def rms_employee_exists(user_id, employee_url, issued_token, ssl_context):
+	retrieve_request = Request(
+		f"{employee_url.rstrip('/')}/{quote(str(user_id), safe='')}",
+		headers={"Token": issued_token, "Accept": "application/json"},
+		method="GET",
+	)
+	try:
+		with urlopen(retrieve_request, context=ssl_context):
+			return True
+	except HTTPError as error:
+		if error.code in {400, 404}:
+			return False
+		raise
+
+
 def load_department_mappings(mapping_path):
-	workbook = load_workbook(mapping_path, data_only=True)
+	with warnings.catch_warnings():
+		warnings.filterwarnings(
+			"ignore",
+			message="Data Validation extension is not supported and will be removed",
+			category=UserWarning,
+			module=r"openpyxl\.worksheet\._reader",
+		)
+		workbook = load_workbook(mapping_path, data_only=True)
 	department_mappings = {}
 	mapping_table_found = False
 	try:
@@ -307,10 +330,40 @@ def _process():
 	department_mappings = load_department_mappings(
 		Path(__file__).with_name("Mapping.xlsx")
 	)
+	rms_update_enabled = os.environ.get("RMS_UPDATE_ENABLED", "false").strip().lower()
+	if rms_update_enabled not in {"true", "false"}:
+		raise ValueError("RMS_UPDATE_ENABLED must be true or false")
+	processed_ids_path = Path(__file__).with_name("ProcessedUserID.json")
+	processed_user_ids = load_processed_user_ids(processed_ids_path)
 	rms_employees = []
+	rms_lookup_token = None
+	rms_employee_url = os.environ["RMS_EMPLOYEE_URL"]
 	for employee in employee_list["Results"]:
 		try:
 			rms_employee = build_rms_employee(employee, department_mappings)
+			if rms_lookup_token is None:
+				rms_lookup_token = get_rms_token(os.environ, ssl_context)
+			exists_in_rms = rms_employee_exists(
+				employee["EmployeeNo"],
+				rms_employee_url,
+				rms_lookup_token,
+				ssl_context,
+			)
+			user_id = str(employee["EmployeeNo"])
+			user_status = processed_user_ids.setdefault(
+				user_id,
+				{
+					"EmployeeUpdateSuccess": False,
+					"EmployeeNFCUpdateSuccess": False,
+				},
+			)
+			status_changed = user_status["EmployeeUpdateSuccess"] != exists_in_rms
+			user_status["EmployeeUpdateSuccess"] = exists_in_rms
+			if exists_in_rms and not user_status["EmployeeNFCUpdateSuccess"]:
+				user_status["EmployeeNFCUpdateSuccess"] = True
+				status_changed = True
+			if status_changed:
+				save_processed_user_ids(processed_ids_path, processed_user_ids)
 		except DepartmentMappingError as error:
 			user_id = employee.get("EmployeeNo", "unknown")
 			message = f"Department mapping failed for employee {user_id}: {error}"
@@ -319,12 +372,6 @@ def _process():
 			continue
 		rms_employees.append((employee, rms_employee))
 
-	rms_update_enabled = os.environ.get("RMS_UPDATE_ENABLED", "false").strip().lower()
-	if rms_update_enabled not in {"true", "false"}:
-		raise ValueError("RMS_UPDATE_ENABLED must be true or false")
-
-	processed_ids_path = Path(__file__).with_name("ProcessedUserID.json")
-	processed_user_ids = load_processed_user_ids(processed_ids_path)
 	pending_employees = [
 		(employee, rms_employee)
 		for employee, rms_employee in rms_employees
