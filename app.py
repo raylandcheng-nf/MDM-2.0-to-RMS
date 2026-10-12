@@ -16,6 +16,10 @@ class DepartmentMappingError(ValueError):
 	pass
 
 
+class EmployeeDataError(ValueError):
+	pass
+
+
 def load_env_file():
 	env_path = Path(__file__).with_name(".env")
 	for line in env_path.read_text(encoding="utf-8").splitlines():
@@ -90,6 +94,16 @@ def notify_api_error(message):
 		)
 	except Exception as notification_error:
 		print(f"Failed to send error notification: {notification_error}")
+
+
+def report_employee_error(user_id, action, error):
+	message = f"{action} for employee {user_id} failed: {error}"
+	if isinstance(error, HTTPError):
+		response_body = error.read().decode("utf-8", errors="replace")
+		if response_body:
+			message += f"\nResponse: {response_body}"
+	print(message)
+	notify_api_error(message)
 
 
 def get_rms_token(settings, ssl_context):
@@ -209,7 +223,7 @@ def build_rms_employee(employee, department_mappings):
 	)
 	department_name = (employee.get("PrimaryDepartment") or {}).get("Name")
 	if not isinstance(department_name, str) or not department_name.strip():
-		raise ValueError(
+		raise EmployeeDataError(
 			f"Employee {employee.get('EmployeeNo')} is missing PrimaryDepartment.Name"
 		)
 	department_name = department_name.strip()
@@ -320,12 +334,27 @@ def _process():
 		page += 1
 	employee_list["Results"] = all_employees
 	cutoff_date = date.fromisoformat(os.environ["MDM_ORIGINAL_HIRE_DATE"])
-	employee_list["Results"] = [
-		employee
-		for employee in employee_list["Results"]
-		if employee.get("OriginalHireDate")
-		and date.fromisoformat(employee["OriginalHireDate"][:10]) > cutoff_date
-	]
+	filtered_employees = []
+	for employee in employee_list["Results"]:
+		user_id = employee.get("EmployeeNo", "unknown") if isinstance(employee, dict) else "unknown"
+		if not isinstance(employee, dict):
+			report_employee_error(
+				user_id,
+				"Employee data validation",
+				EmployeeDataError("MDM employee result is not an object"),
+			)
+			continue
+		hire_date = employee.get("OriginalHireDate")
+		if not hire_date:
+			continue
+		try:
+			original_hire_date = date.fromisoformat(hire_date[:10])
+		except Exception as error:
+			report_employee_error(user_id, "Employee hire-date validation", error)
+			continue
+		if original_hire_date > cutoff_date:
+			filtered_employees.append(employee)
+	employee_list["Results"] = filtered_employees
 	employee_list["Count"] = len(employee_list["Results"])
 	department_mappings = load_department_mappings(
 		Path(__file__).with_name("Mapping.xlsx")
@@ -337,18 +366,42 @@ def _process():
 	processed_user_ids = load_processed_user_ids(processed_ids_path)
 	rms_employees = []
 	rms_lookup_token = None
-	rms_employee_url = os.environ["RMS_EMPLOYEE_URL"]
+	rms_employee_url = os.environ.get("RMS_EMPLOYEE_URL")
+	if rms_update_enabled == "true" and not rms_employee_url:
+		raise ValueError("RMS_EMPLOYEE_URL is required when RMS_UPDATE_ENABLED is true")
+	if rms_update_enabled == "true" and employee_list["Results"]:
+		try:
+			rms_lookup_token = get_rms_token(os.environ, ssl_context)
+		except Exception as error:
+			message = f"RMS employee lookup token request failed: {error}"
+			print(message)
+			notify_api_error(message)
 	for employee in employee_list["Results"]:
+		user_id = employee.get("EmployeeNo", "unknown") if isinstance(employee, dict) else "unknown"
 		try:
 			rms_employee = build_rms_employee(employee, department_mappings)
+		except Exception as error:
+			if isinstance(error, DepartmentMappingError):
+				action = "Department mapping"
+			elif isinstance(error, EmployeeDataError):
+				action = "Employee data validation"
+			else:
+				action = "Employee processing"
+			report_employee_error(user_id, action, error)
+			continue
+		if rms_update_enabled == "true":
 			if rms_lookup_token is None:
-				rms_lookup_token = get_rms_token(os.environ, ssl_context)
-			exists_in_rms = rms_employee_exists(
-				employee["EmployeeNo"],
-				rms_employee_url,
-				rms_lookup_token,
-				ssl_context,
-			)
+				continue
+			try:
+				exists_in_rms = rms_employee_exists(
+					employee["EmployeeNo"],
+					rms_employee_url,
+					rms_lookup_token,
+					ssl_context,
+				)
+			except Exception as error:
+				report_employee_error(user_id, "RMS employee lookup", error)
+				continue
 			user_id = str(employee["EmployeeNo"])
 			user_status = processed_user_ids.setdefault(
 				user_id,
@@ -364,12 +417,6 @@ def _process():
 				status_changed = True
 			if status_changed:
 				save_processed_user_ids(processed_ids_path, processed_user_ids)
-		except DepartmentMappingError as error:
-			user_id = employee.get("EmployeeNo", "unknown")
-			message = f"Department mapping failed for employee {user_id}: {error}"
-			print(message)
-			notify_api_error(message)
-			continue
 		rms_employees.append((employee, rms_employee))
 
 	pending_employees = [
@@ -380,15 +427,26 @@ def _process():
 				for status_name in ("EmployeeUpdateSuccess", "EmployeeNFCUpdateSuccess"))
 	]
 	for employee, rms_employee in pending_employees:
-		employee_summary = dict(rms_employee)
-		employee_summary["NFCIDs"] = [
-			card.get("StaffCardId")
-			for card in employee.get("StaffCards") or []
-			if card.get("StaffCardId")
-		]
-		print(json.dumps(employee_summary, ensure_ascii=False, indent=2))
+		user_id = employee.get("EmployeeNo", "unknown")
+		try:
+			employee_summary = dict(rms_employee)
+			employee_summary["NFCIDs"] = [
+				card.get("StaffCardId")
+				for card in employee.get("StaffCards") or []
+				if card.get("StaffCardId")
+			]
+			print(json.dumps(employee_summary, ensure_ascii=False, indent=2))
+		except Exception as error:
+			report_employee_error(user_id, "Employee summary", error)
 	if rms_update_enabled == "true" and pending_employees:
-		rms_token = get_rms_token(os.environ, ssl_context)
+		try:
+			rms_token = get_rms_token(os.environ, ssl_context)
+		except Exception as error:
+			message = f"RMS update token request failed; employee updates were skipped: {error}"
+			print(message)
+			notify_api_error(message)
+			pending_employees = []
+	if rms_update_enabled == "true" and pending_employees:
 		rms_employee_url = os.environ["RMS_EMPLOYEE_URL"]
 		rms_employee_nfc_url = os.environ["RMS_EMPLOYEE_NFC_URL"]
 		for employee, rms_employee in pending_employees:
@@ -405,15 +463,9 @@ def _process():
 					status = create_rms_employee(
 						rms_employee, rms_employee_url, rms_token, ssl_context
 					)
-				except HTTPError as error:
-					print(f"Create employee {user_id}: FAILED (HTTP {error.code})")
-					response_body = error.read().decode("utf-8", errors="replace")
-					if response_body:
-						print(response_body)
-						notify_api_error(
-							f"Create employee {user_id} failed: HTTP {error.code} {error.reason}. "
-							f"Response: {response_body or 'No response body'}"
-						)
+				except Exception as error:
+					print(f"Create employee {user_id}: FAILED ({error})")
+					report_employee_error(user_id, "RMS employee creation", error)
 					continue
 				print(f"Create employee {user_id}: SUCCESS (HTTP {status})")
 				user_status["EmployeeUpdateSuccess"] = True
@@ -423,15 +475,9 @@ def _process():
 					nfc_status = create_rms_employee_nfc(
 						employee, rms_employee_nfc_url, rms_token, ssl_context
 					)
-				except HTTPError as error:
-					print(f"Create employee NFC {user_id}: FAILED (HTTP {error.code})")
-					response_body = error.read().decode("utf-8", errors="replace")
-					if response_body:
-						print(response_body)
-						notify_api_error(
-							f"Create employee NFC {user_id} failed: HTTP {error.code} {error.reason}. "
-							f"Response: {response_body or 'No response body'}"
-						)
+				except Exception as error:
+					print(f"Create employee NFC {user_id}: FAILED ({error})")
+					report_employee_error(user_id, "RMS EmployeeNFC creation", error)
 					continue
 				if nfc_status is None:
 					print(f"Create employee NFC {user_id}: SKIPPED (no StaffCardId in MDM)")
