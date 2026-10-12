@@ -1,6 +1,6 @@
 # MDM Employee Export
 
-`app.py` retrieves employee records from the MDM API, filters them by original hire date, and can create corresponding employee records in RMS when updates are enabled. It saves the filtered MDM response to `employeeList.json` and prints a compact summary of each included employee to the console.
+`app.py` retrieves employee records from the MDM API, filters them to active employees whose original hire date is later than the configured cutoff, and can create corresponding employee records in RMS when updates are enabled. It saves the filtered MDM response to `employeeList.json` and prints a compact summary of each included employee to the console.
 
 ## Requirements
 
@@ -33,7 +33,7 @@ RMS_EMPLOYEE_NFC_URL=<RMS EmployeeNFC endpoint>
 RMS_UPDATE_ENABLED=false
 ```
 
-Choose the query size and hire-date cutoff appropriate for your export. `MDM_ORIGINAL_HIRE_DATE` must be an ISO date (`YYYY-MM-DD`). Employees are included only when their `OriginalHireDate` is strictly later than this cutoff.
+Choose the query size and hire-date cutoff appropriate for your export. `MDM_ORIGINAL_HIRE_DATE` must be an ISO date (`YYYY-MM-DD`). Only employees with top-level `IsActive` set to `true` and an `OriginalHireDate` strictly later than this cutoff are included.
 
 Optional TLS setting:
 
@@ -66,7 +66,7 @@ Employee-specific data, department mapping, RMS lookup, and RMS create errors ar
 
 ## Output
 
-- `employeeList.json` is written next to `app.py`. It contains the first page's response metadata and the combined `Results` from all fetched pages, filtered by `OriginalHireDate`. Its `Count` is updated to the number of included employees.
+- `employeeList.json` is written next to `app.py`. It contains the first page's response metadata and the combined `Results` from all fetched pages, filtered to active employees with `OriginalHireDate` later than the cutoff. Its `Count` is updated to the number of included employees.
 - `ProcessedUserID.json` is written next to `app.py` and maps each employee ID to `EmployeeUpdateSuccess` and `EmployeeNFCUpdateSuccess` boolean values. It is initialized as an empty object if it does not exist. For example, this record retries only EmployeeNFC:
 
 	```json

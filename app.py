@@ -344,6 +344,8 @@ def _process():
 				EmployeeDataError("MDM employee result is not an object"),
 			)
 			continue
+		if employee.get("IsActive") is not True:
+			continue
 		hire_date = employee.get("OriginalHireDate")
 		if not hire_date:
 			continue
