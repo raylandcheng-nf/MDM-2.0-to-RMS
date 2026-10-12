@@ -17,6 +17,8 @@ pip install -r requirements.txt
 
 ## Configuration
 
+Start by copying `.env.example` to `.env`, then replace the placeholder values with your environment's endpoints and credentials. The sample includes Email Center settings used when the app sends error notifications.
+
 Create a `.env` file in the same directory as `app.py` with these settings:
 
 ```dotenv
